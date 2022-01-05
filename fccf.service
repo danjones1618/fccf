@@ -1,0 +1,12 @@
+[Unit]
+Description=Fix /etc/fancontrol's device paths if changed
+ConditionFileNotEmpty=/etc/fancontrol
+Before=fancontrol.service
+After=lm_sensors.service
+
+[Service]
+Type=oneshot
+ExecStart=fccf.py
+
+[Install]
+WantedBy=multi-user.target
