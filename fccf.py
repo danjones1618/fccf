@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import sys
 
 
@@ -11,16 +11,30 @@ HWMON_PATH = Path("/sys/class/hwmon")
 
 @dataclass()
 class MonitorMapping():
+    path: Path
     hwmon: str
     name: str
 
+
 def get_needed_monitor_names() -> Optional[List[MonitorMapping]]:
+    paths = []
+    names = []
+
     with open("/etc/fancontrol") as f:
         for line in f:
             if line.startswith("DEVNAME="):
                 line = line.replace("DEVNAME=", "").strip()
-                return [MonitorMapping(*mon.split("=")) for mon in line.split(" ")]
-        return None
+                names = [mon.split("=") for mon in line.split(" ")]
+            elif line.startswith("DEVPATH="):
+                line = line.replace("DEVPATH=", "").strip()
+                paths = [mon.split("=") for mon in line.split(" ")]
+
+    needed = []
+    for [path_hwname, path] in paths:
+        for [names_hwname, name] in names:
+            if path_hwname == names_hwname:
+                needed.append(MonitorMapping(Path(path), path_hwname, name))
+    return needed
 
 
 def update_fancontrol_conf(old: List[MonitorMapping], new: List[MonitorMapping]) -> None:
@@ -28,26 +42,29 @@ def update_fancontrol_conf(old: List[MonitorMapping], new: List[MonitorMapping])
         config = f.read()
 
     for old_monitor in old:
-        old_hwmon = old_monitor.hwmon
-        new_hwmon = ""
+        new_mon: Optional[MonitorMapping] = None
 
         for new_monitor in new:
             if new_monitor.name == old_monitor.name:
-                new_hwmon = new_monitor.hwmon
+                new_mon = new_monitor
                 break
 
-        if old_hwmon != new_hwmon:
-            print(f"Warning: updating {old_hwmon} to {new_hwmon}")
-            config = config.replace(old_hwmon, new_hwmon)
+        if new_mon and old_monitor.hwmon != new_mon.hwmon:
+            print(f"Warning: updating {old_monitor.hwmon} to {new_mon.hwmon}")
+            config = config.replace(old_monitor.hwmon, new_mon.hwmon)
+
+        if new_mon and old_monitor.path != new_mon.path:
+            print(f"Warning: updating {old_monitor.path} to {new_mon.path}")
+            config = config.replace(str(old_monitor.path), str(new_mon.path))
 
     with open("/etc/fancontrol", "w") as f:
         f.write(config)
 
 
 def fix_monitor_mappings(required: List[MonitorMapping], available: List[MonitorMapping]) -> List[MonitorMapping]:
-    avail_map = {}
+    avail_map: Dict[str, MonitorMapping] = {}
     for mon in available:
-        avail_map[mon.name] = mon.hwmon
+        avail_map[mon.name] = mon
 
     result = []
     for mon in required:
@@ -55,7 +72,7 @@ def fix_monitor_mappings(required: List[MonitorMapping], available: List[Monitor
         if new_hwmon is None:
             print(f"Error: {mon.name} does not exist", file=sys.stderr)
             sys.exit(1)
-        result.append(MonitorMapping(new_hwmon, mon.name))
+        result.append(MonitorMapping(new_hwmon.path, new_hwmon.hwmon, mon.name))
     return result
 
 
@@ -63,7 +80,8 @@ def get_available_monitors() -> List[MonitorMapping]:
     monitors = []
     for mon_path in HWMON_PATH.glob("hwmon*"):
         with open(mon_path / "name") as name:
-            monitors.append(MonitorMapping(mon_path.name, name.read().strip()))
+            dev_path = mon_path.resolve().relative_to("/sys").parent.parent
+            monitors.append(MonitorMapping(dev_path, mon_path.name, name.read().strip()))
     return monitors
 
 
